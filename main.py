@@ -16,6 +16,13 @@ from json_data_manager import JsonDataManager
 from war_justifications import WAR_JUSTIFICATIONS, get_available_justifications, validate_justification
 from battle_system import BattleSystem, BattleSide, create_battle_brigade, create_battle_general
 
+# Import keep_alive for Replit hosting
+try:
+    from keep_alive import keep_alive
+    REPLIT_HOSTING = True
+except ImportError:
+    REPLIT_HOSTING = False
+
 # Load environment variables
 load_dotenv()
 
@@ -261,31 +268,6 @@ async def list_brigades(ctx):
         )
     
     await ctx.send(embed=embed)
-
-@bot.command(name='enhance_brigade')
-async def enhance_brigade(ctx, brigade_id: int, enhancement: str):
-    """Add enhancement to a brigade."""
-    if war_bot.current_phase != GamePhase.ORGANIZATION:
-        await ctx.send("Brigades can only be enhanced during Organization phase (Tuesday/Friday)!")
-        return
-    
-    player = await db.get_player(ctx.author.id)
-    if not player:
-        await ctx.send("You must register first! Use `!register`")
-        return
-    
-    # Validate enhancement exists
-    if enhancement not in ENHANCEMENTS:
-        available = ", ".join(ENHANCEMENTS.keys())
-        await ctx.send(f"Invalid enhancement. Available: {available}")
-        return
-    
-    # TODO: Get brigade from database and validate ownership
-    # TODO: Check if enhancement is compatible with brigade type
-    # TODO: Check if player has required resources
-    # TODO: Apply enhancement
-    
-    await ctx.send(f"Enhancement '{enhancement}' applied to brigade #{brigade_id}!")
 
 @bot.command(name='recruit_general')
 async def recruit_general(ctx, name: Optional[str] = None):
@@ -1045,4 +1027,9 @@ if __name__ == "__main__":
         print("ERROR: DISCORD_TOKEN not found in environment variables!")
         print("Please create a .env file with your bot token.")
     else:
+        # Start keep-alive server for Replit hosting
+        if REPLIT_HOSTING:
+            keep_alive()
+            print("Keep-alive server started for Replit hosting")
+        
         bot.run(token)
