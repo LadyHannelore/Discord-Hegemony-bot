@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 run = "python main.py"
 modules = ["python-3.12"]
 
@@ -10,3 +11,12 @@ run = ["sh", "-c", "python main.py"]
 [[ports]]
 localPort = 8080
 externalPort = 80
+=======
+modules = ["python-3.12"]
+run = "python main.py"
+[nix]
+channel = "stable-25_05"
+
+[deployment]
+run = ["sh", "-c", "python main.py"]
+>>>>>>> 02daa51bea81274ca6ea787369eeb6ce9748fd65
