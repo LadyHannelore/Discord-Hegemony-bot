@@ -1,0 +1,28 @@
+{
+  "name": "discord-hegemony-bot",
+  "version": "1.0.0",
+  "description": "A Discord bot for managing a war simulator game with complex military mechanics",
+  "main": "main.py",
+  "scripts": {
+    "start": "python main.py",
+    "install": "pip install -r requirements.txt",
+    "dev": "python main.py"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LadyHannelore/Discord-Hegemony-bot.git"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "war",
+    "simulation",
+    "strategy",
+    "game"
+  ],
+  "author": "LadyHannelore",
+  "license": "MIT",
+  "engines": {
+    "python": ">=3.8"
+  }
+}
