@@ -32,9 +32,10 @@ except ImportError:
 # Load environment variables
 load_dotenv()
 
-# Bot setup
+# Bot setup - Only use basic intents (no privileged intents required)
 intents = discord.Intents.default()
-intents.message_content = True
+# Remove message_content intent as it's privileged and we only use slash commands
+# intents.message_content = True  # Not needed for slash commands
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Initialize JSON data manager
