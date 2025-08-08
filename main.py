@@ -197,11 +197,11 @@ async def profile_slash(interaction: discord.Interaction, member: Optional[disco
     city="City to create the brigade in"
 )
 @app_commands.choices(brigade_type=[
-    app_commands.Choice(name="Heavy Infantry", value="heavy"),
-    app_commands.Choice(name="Light Infantry", value="light"),
-    app_commands.Choice(name="Ranged", value="ranged"),
-    app_commands.Choice(name="Cavalry", value="cavalry"),
-    app_commands.Choice(name="Support", value="support")
+    app_commands.Choice(name="🐴 Cavalry", value="🐴 Cavalry"),
+    app_commands.Choice(name="⚔️ Heavy", value="⚔️ Heavy"),
+    app_commands.Choice(name="🪓 Light", value="🪓 Light"),
+    app_commands.Choice(name="🏹 Ranged", value="🏹 Ranged"),
+    app_commands.Choice(name="🛡️ Support", value="🛡️ Support")
 ])
 async def create_brigade_slash(interaction: discord.Interaction, brigade_type: str, city: str = "Capital"):
     """Create a new brigade."""
@@ -246,17 +246,21 @@ async def create_brigade_slash(interaction: discord.Interaction, brigade_type: s
         color=discord.Color.green()
     )
     
-    # Show brigade stats
-    brigade_enum = next(bt for bt in BrigadeType if bt.value == brigade_type)
-    stats = BRIGADE_STATS[brigade_enum]
-    
-    embed.add_field(name="Stats", value=(
-        f"⚔️ Skirmish: {stats.skirmish}\n"
-        f"🛡️ Defense: {stats.defense}\n"
-        f"📯 Pitch: {stats.pitch}\n"
-        f"🚩 Rally: {stats.rally}\n"
-        f"🏃 Movement: {stats.movement}"
-    ), inline=True)
+    # Show brigade stats - find matching brigade type
+    try:
+        brigade_enum = next(bt for bt in BrigadeType if bt.value == brigade_type)
+        stats = BRIGADE_STATS[brigade_enum]
+        
+        embed.add_field(name="Stats", value=(
+            f"⚔️ Skirmish: {stats.skirmish}\n"
+            f"🛡️ Defense: {stats.defense}\n"
+            f"📯 Pitch: {stats.pitch}\n"
+            f"🚩 Rally: {stats.rally}\n"
+            f"🏃 Movement: {stats.movement}"
+        ), inline=True)
+    except StopIteration:
+        # Fallback if brigade type not found
+        embed.add_field(name="Stats", value="Stats will be available after creation", inline=True)
     
     embed.add_field(name="Brigade ID", value=str(brigade_id), inline=True)
     embed.add_field(name="Cost", value=cost_text, inline=True)
