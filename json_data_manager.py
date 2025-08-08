@@ -398,6 +398,42 @@ class JsonDataManager:
         """Get all generals data."""
         return await self._load_json(self.generals_file)
 
+    async def get_all_armies(self) -> Dict[str, Dict]:
+        """Get all armies data."""
+        return await self._load_json(self.armies_file)
+
+    async def get_all_wars(self) -> Dict[str, Dict]:
+        """Get all wars data."""
+        return await self._load_json(self.wars_file)
+
+    async def get_army(self, army_id: str) -> Optional[Dict]:
+        """Get specific army by ID."""
+        armies = await self._load_json(self.armies_file)
+        return armies.get(army_id)
+
+    async def update_army(self, army_id: str, updates: Dict) -> bool:
+        """Update army data."""
+        armies = await self._load_json(self.armies_file)
+        if army_id in armies:
+            armies[army_id].update(updates)
+            armies[army_id]['updated_at'] = datetime.now().isoformat()
+            await self._save_json(self.armies_file, armies)
+            return True
+        return False
+
+    async def delete_army(self, army_id: str) -> bool:
+        """Delete an army."""
+        armies = await self._load_json(self.armies_file)
+        if army_id in armies:
+            del armies[army_id]
+            await self._save_json(self.armies_file, armies)
+            return True
+        return False
+
+    async def add_resource(self, player_id: int, resource_type: str, amount: int) -> bool:
+        """Add a single resource to player."""
+        return await self.add_resources(player_id, {resource_type: amount})
+
     async def export_player_data(self, player_id: int) -> Dict:
         """Export all data for a specific player."""
         player = await self.get_player(player_id)

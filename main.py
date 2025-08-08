@@ -1021,6 +1021,348 @@ async def on_command_error(ctx, error):
     else:
         await ctx.send(f"An error occurred: {error}")
 
+# Missing commands implementation
+@bot.command(name='recruit_brigade')
+async def recruit_brigade(ctx, brigade_type: str):
+    """Alias for create_brigade command."""
+    await create_brigade(ctx, brigade_type)
+
+@bot.command(name='move_brigade')
+async def move_brigade(ctx, brigade_id: str, direction: str):
+    """Move a brigade in a direction."""
+    if war_bot.current_phase != GamePhase.MOVEMENT:
+        await ctx.send("Brigades can only be moved during Movement phase (Wednesday/Saturday)!")
+        return
+    
+    player = await db.get_player(ctx.author.id)
+    if not player:
+        await ctx.send("You must register first! Use `!register`")
+        return
+    
+    brigade = await db.get_brigade(brigade_id)
+    if not brigade:
+        await ctx.send("Brigade not found.")
+        return
+    
+    if brigade['player_id'] != ctx.author.id:
+        await ctx.send("You don't own this brigade.")
+        return
+    
+    if brigade.get('army_id'):
+        await ctx.send("This brigade is part of an army. Use `!move_army` instead.")
+        return
+    
+    # Simple direction validation
+    valid_directions = ['north', 'south', 'east', 'west', 'northeast', 'northwest', 'southeast', 'southwest']
+    if direction.lower() not in valid_directions:
+        await ctx.send(f"Invalid direction. Valid directions: {', '.join(valid_directions)}")
+        return
+    
+    # Update brigade location (simplified - just append direction)
+    current_location = brigade.get('location', 'Unknown')
+    new_location = f"{current_location} -> {direction.title()}"
+    await db.update_brigade(brigade_id, {"location": new_location})
+    
+    embed = discord.Embed(
+        title="Brigade Moved",
+        description=f"Brigade {brigade_id} moved {direction}",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="New Location", value=new_location, inline=False)
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name='form_army')
+async def form_army(ctx, general_id: str, *brigade_ids):
+    """Form an army with a general and brigades."""
+    if war_bot.current_phase != GamePhase.ORGANIZATION:
+        await ctx.send("Armies can only be formed during Organization phase (Tuesday/Friday)!")
+        return
+    
+    player = await db.get_player(ctx.author.id)
+    if not player:
+        await ctx.send("You must register first! Use `!register`")
+        return
+    
+    # Validate general
+    general = await db.get_general(general_id)
+    if not general:
+        await ctx.send("General not found.")
+        return
+    
+    if general['player_id'] != ctx.author.id:
+        await ctx.send("You don't own this general.")
+        return
+    
+    if general.get('army_id'):
+        await ctx.send("This general is already leading an army.")
+        return
+    
+    # Validate brigades
+    if not brigade_ids:
+        await ctx.send("You must specify at least one brigade.")
+        return
+    
+    valid_brigades = []
+    for brigade_id in brigade_ids:
+        brigade = await db.get_brigade(brigade_id)
+        if not brigade:
+            await ctx.send(f"Brigade {brigade_id} not found.")
+            return
+        
+        if brigade['player_id'] != ctx.author.id:
+            await ctx.send(f"You don't own brigade {brigade_id}.")
+            return
+        
+        if brigade.get('army_id'):
+            await ctx.send(f"Brigade {brigade_id} is already in an army.")
+            return
+        
+        valid_brigades.append(brigade_id)
+    
+    # Create army
+    army_id = await db.create_army(ctx.author.id, general_id, valid_brigades, f"{general['name']}'s Army")
+    
+    # Update general and brigades
+    await db.update_general(general_id, {"army_id": army_id})
+    for brigade_id in valid_brigades:
+        await db.update_brigade(brigade_id, {"army_id": army_id})
+    
+    embed = discord.Embed(
+        title="Army Formed!",
+        description=f"Army '{general['name']}'s Army' has been formed",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="General", value=general['name'], inline=True)
+    embed.add_field(name="Brigades", value=f"{len(valid_brigades)} units", inline=True)
+    embed.add_field(name="Army ID", value=army_id, inline=True)
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name='disband_army')
+async def disband_army(ctx, army_id: str):
+    """Disband an army."""
+    if war_bot.current_phase != GamePhase.ORGANIZATION:
+        await ctx.send("Armies can only be disbanded during Organization phase (Tuesday/Friday)!")
+        return
+    
+    army = await db.get_army(army_id)
+    if not army:
+        await ctx.send("Army not found.")
+        return
+    
+    if army['player_id'] != ctx.author.id:
+        await ctx.send("You don't own this army.")
+        return
+    
+    # Free general and brigades
+    if army.get('general_id'):
+        await db.update_general(army['general_id'], {"army_id": None})
+    
+    for brigade_id in army.get('brigade_ids', []):
+        await db.update_brigade(brigade_id, {"army_id": None})
+    
+    # Delete army
+    await db.delete_army(army_id)
+    
+    embed = discord.Embed(
+        title="Army Disbanded",
+        description=f"Army '{army['name']}' has been disbanded",
+        color=discord.Color.red()
+    )
+    embed.add_field(name="Units Released", value=f"{len(army.get('brigade_ids', []))} brigades", inline=True)
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name='move_army')
+async def move_army(ctx, army_id: str, direction: str):
+    """Move an army in a direction."""
+    if war_bot.current_phase != GamePhase.MOVEMENT:
+        await ctx.send("Armies can only be moved during Movement phase (Wednesday/Saturday)!")
+        return
+    
+    army = await db.get_army(army_id)
+    if not army:
+        await ctx.send("Army not found.")
+        return
+    
+    if army['player_id'] != ctx.author.id:
+        await ctx.send("You don't own this army.")
+        return
+    
+    # Simple direction validation
+    valid_directions = ['north', 'south', 'east', 'west', 'northeast', 'northwest', 'southeast', 'southwest']
+    if direction.lower() not in valid_directions:
+        await ctx.send(f"Invalid direction. Valid directions: {', '.join(valid_directions)}")
+        return
+    
+    # Update army location
+    current_location = army.get('location', 'Unknown')
+    new_location = f"{current_location} -> {direction.title()}"
+    await db.update_army(army_id, {"location": new_location})
+    
+    # Update all brigade locations in the army
+    for brigade_id in army.get('brigade_ids', []):
+        await db.update_brigade(brigade_id, {"location": new_location})
+    
+    embed = discord.Embed(
+        title="Army Moved",
+        description=f"Army '{army['name']}' moved {direction}",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="New Location", value=new_location, inline=False)
+    embed.add_field(name="Brigades Moved", value=len(army.get('brigade_ids', [])), inline=True)
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name='pillage')
+async def pillage(ctx, brigade_id: str):
+    """Pillage resources with a brigade."""
+    if war_bot.current_phase != GamePhase.MOVEMENT:
+        await ctx.send("Pillaging can only be done during Movement phase (Wednesday/Saturday)!")
+        return
+    
+    player = await db.get_player(ctx.author.id)
+    if not player:
+        await ctx.send("You must register first! Use `!register`")
+        return
+    
+    brigade = await db.get_brigade(brigade_id)
+    if not brigade:
+        await ctx.send("Brigade not found.")
+        return
+    
+    if brigade['player_id'] != ctx.author.id:
+        await ctx.send("You don't own this brigade.")
+        return
+    
+    if brigade.get('is_garrisoned'):
+        await ctx.send("Garrisoned brigades cannot pillage.")
+        return
+    
+    # Roll for pillage success (6 on d6)
+    roll = random.randint(1, 6)
+    
+    embed = discord.Embed(title="Pillaging Attempt", color=discord.Color.orange())
+    embed.add_field(name="Brigade", value=f"{brigade['type']} at {brigade.get('location', 'Unknown')}", inline=False)
+    embed.add_field(name="Roll", value=f"🎲 {roll}/6", inline=True)
+    
+    if roll == 6:
+        # Successful pillage - gain random resource
+        resources = ['food', 'metal', 'wood', 'stone']
+        gained_resource = random.choice(resources)
+        amount = 1
+        
+        await db.add_resource(ctx.author.id, gained_resource, amount)
+        
+        embed.add_field(name="Result", value="✅ Success!", inline=True)
+        embed.add_field(name="Gained", value=f"{amount} {gained_resource}", inline=True)
+        embed.color = discord.Color.green()
+    else:
+        embed.add_field(name="Result", value="❌ Failed", inline=True)
+        embed.add_field(name="Gained", value="Nothing", inline=True)
+        embed.color = discord.Color.red()
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name='assault')
+async def assault_city(ctx, city_name: str):
+    """Assault a besieged city."""
+    if war_bot.current_phase != GamePhase.BATTLE:
+        await ctx.send("Assaults can only be launched during Battle phase (Thursday/Sunday)!")
+        return
+    
+    player = await db.get_player(ctx.author.id)
+    if not player:
+        await ctx.send("You must register first! Use `!register`")
+        return
+    
+    # TODO: Check if city is under siege by this player
+    # TODO: Implement actual assault mechanics
+    # For now, simplified implementation
+    
+    embed = discord.Embed(
+        title="🏰 City Assault",
+        description=f"Assault on {city_name} has begun!",
+        color=discord.Color.red()
+    )
+    
+    # Simple assault resolution
+    assault_roll = random.randint(1, 6)
+    
+    if assault_roll >= 4:
+        embed.add_field(name="Result", value="✅ Assault Successful!", inline=False)
+        embed.add_field(name="City Status", value="Captured", inline=True)
+        embed.color = discord.Color.green()
+        
+        # Award city to player (simplified)
+        cities = player.get('cities', [])
+        if city_name not in cities:
+            cities.append(city_name)
+            await db.update_player(ctx.author.id, {"cities": cities})
+    else:
+        embed.add_field(name="Result", value="❌ Assault Failed", inline=False)
+        embed.add_field(name="City Status", value="Still Besieged", inline=True)
+        embed.color = discord.Color.red()
+    
+    embed.add_field(name="Roll", value=f"🎲 {assault_roll}/6", inline=True)
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name='data_stats')
+async def data_stats(ctx):
+    """Show game data statistics."""
+    try:
+        players = await db.get_all_players()
+        brigades = await db.get_all_brigades()
+        generals = await db.get_all_generals()
+        armies = await db.get_all_armies()
+        wars = await db.get_all_wars()
+        
+        embed = discord.Embed(
+            title="📊 Game Statistics",
+            description="Current state of the game world",
+            color=discord.Color.blue()
+        )
+        
+        # Basic counts
+        embed.add_field(name="👥 Players", value=len(players), inline=True)
+        embed.add_field(name="⚔️ Brigades", value=len(brigades), inline=True)
+        embed.add_field(name="🎖️ Generals", value=len(generals), inline=True)
+        embed.add_field(name="🚩 Armies", value=len(armies), inline=True)
+        embed.add_field(name="⚔️ Wars", value=len(wars), inline=True)
+        
+        # Active wars
+        active_wars = len([w for w in wars.values() if w.get('status') == 'active'])
+        embed.add_field(name="🔥 Active Wars", value=active_wars, inline=True)
+        
+        # Brigade type breakdown
+        brigade_types = {}
+        for brigade in brigades.values():
+            btype = brigade.get('type', 'Unknown')
+            brigade_types[btype] = brigade_types.get(btype, 0) + 1
+        
+        if brigade_types:
+            type_breakdown = "\n".join([f"{btype}: {count}" for btype, count in sorted(brigade_types.items())])
+            embed.add_field(name="Brigade Types", value=type_breakdown, inline=False)
+        
+        # War college levels
+        wc_levels = {}
+        for player in players.values():
+            level = player.get('war_college_level', 1)
+            wc_levels[level] = wc_levels.get(level, 0) + 1
+        
+        if wc_levels:
+            level_breakdown = "\n".join([f"Level {level}: {count} players" for level, count in sorted(wc_levels.items())])
+            embed.add_field(name="War College Levels", value=level_breakdown, inline=False)
+        
+        embed.add_field(name="Current Phase", value=war_bot.current_phase.value, inline=True)
+        
+        await ctx.send(embed=embed)
+    
+    except Exception as e:
+        await ctx.send(f"❌ Error retrieving statistics: {e}")
+
 if __name__ == "__main__":
     token = os.getenv('DISCORD_TOKEN')
     if not token:
