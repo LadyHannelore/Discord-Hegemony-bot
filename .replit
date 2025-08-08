@@ -1,26 +1,2 @@
-<<<<<<< HEAD
-<<<<<<< HEAD
-run = "python main.py"
-modules = ["python-3.12"]
-
-[nix]
-channel = "stable-24_05"
-
-[deployment]
-run = ["sh", "-c", "python main.py"]
-
-[[ports]]
-localPort = 8081
-externalPort = 80
-=======
-modules = ["python-3.12"]
-run = "python main.py"
-=======
-modules = ["python-3.11"]
->>>>>>> 56a30825e3d88972dd7caf71cac7478fed18f9c5
 [nix]
 channel = "stable-25_05"
-
-[[ports]]
-localPort = 8080
-externalPort = 80
