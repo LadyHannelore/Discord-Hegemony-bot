@@ -22,6 +22,7 @@ try:
     REPLIT_HOSTING = True
 except ImportError:
     REPLIT_HOSTING = False
+    keep_alive = None
 
 # Load environment variables
 load_dotenv()
@@ -1211,7 +1212,7 @@ async def move_army(ctx, army_id: str, direction: str):
         color=discord.Color.green()
     )
     embed.add_field(name="New Location", value=new_location, inline=False)
-    embed.add_field(name="Brigades Moved", value=len(army.get('brigade_ids', [])), inline=True)
+    embed.add_field(name="Brigades Moved", value=str(len(army.get('brigade_ids', []))), inline=True)
     
     await ctx.send(embed=embed)
 
@@ -1326,15 +1327,15 @@ async def data_stats(ctx):
         )
         
         # Basic counts
-        embed.add_field(name="👥 Players", value=len(players), inline=True)
-        embed.add_field(name="⚔️ Brigades", value=len(brigades), inline=True)
-        embed.add_field(name="🎖️ Generals", value=len(generals), inline=True)
-        embed.add_field(name="🚩 Armies", value=len(armies), inline=True)
-        embed.add_field(name="⚔️ Wars", value=len(wars), inline=True)
+        embed.add_field(name="👥 Players", value=str(len(players)), inline=True)
+        embed.add_field(name="⚔️ Brigades", value=str(len(brigades)), inline=True)
+        embed.add_field(name="🎖️ Generals", value=str(len(generals)), inline=True)
+        embed.add_field(name="🚩 Armies", value=str(len(armies)), inline=True)
+        embed.add_field(name="⚔️ Wars", value=str(len(wars)), inline=True)
         
         # Active wars
         active_wars = len([w for w in wars.values() if w.get('status') == 'active'])
-        embed.add_field(name="🔥 Active Wars", value=active_wars, inline=True)
+        embed.add_field(name="🔥 Active Wars", value=str(active_wars), inline=True)
         
         # Brigade type breakdown
         brigade_types = {}
@@ -1370,8 +1371,11 @@ if __name__ == "__main__":
         print("Please create a .env file with your bot token.")
     else:
         # Start keep-alive server for Replit hosting
-        if REPLIT_HOSTING:
-            keep_alive()
-            print("Keep-alive server started for Replit hosting")
+        if REPLIT_HOSTING and keep_alive:
+            try:
+                keep_alive()
+                print("Keep-alive server started for Replit hosting")
+            except Exception as e:
+                print(f"Could not start keep-alive server: {e}")
         
         bot.run(token)
