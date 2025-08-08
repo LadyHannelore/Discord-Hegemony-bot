@@ -1,1 +1,26 @@
-{}
+{
+  "233520438242705408": {
+    "user_id": 233520438242705408,
+    "username": "Lady Zentlinde",
+    "war_college_level": 1,
+    "general_cap": 1,
+    "brigade_cap": 2,
+    "cities": [
+      {
+        "name": "Capital",
+        "tier": 1
+      }
+    ],
+    "resources": {
+      "food": 8,
+      "metal": 9,
+      "stone": 5,
+      "timber": 5,
+      "fuel": 2,
+      "gems": 1
+    },
+    "silver": 100,
+    "created_at": "2025-08-08T12:45:43.870189",
+    "updated_at": "2025-08-08T12:46:05.355856"
+  }
+}

@@ -1,1 +1,13 @@
-{}
+{
+  "brigade_1_1754657165": {
+    "id": "brigade_1_1754657165",
+    "player_id": 233520438242705408,
+    "type": "cavalry",
+    "enhancement": null,
+    "location": "Dallas",
+    "army_id": null,
+    "is_garrisoned": false,
+    "is_fatigued": false,
+    "created_at": "2025-08-08T12:46:05.352669"
+  }
+}
