@@ -8,6 +8,11 @@ from typing import Optional, List, Dict
 import asyncio
 from dotenv import load_dotenv
 
+try:
+    import aiofiles
+except ImportError:
+    aiofiles = None
+
 from models import (
     BrigadeType, GamePhase, BRIGADE_STATS, 
     ENHANCEMENTS, GENERAL_TRAITS, Enhancement, BrigadeStats
@@ -578,12 +583,23 @@ async def declare_war(ctx, target: discord.Member, *, justification_name: str):
         await ctx.send(f"Invalid justification: {error_msg}")
         return
     
-    # TODO: Check for existing wars, NAPs, etc.
+    # Check for existing active wars
+    existing_wars = await db.get_active_wars(ctx.author.id)
+    for war in existing_wars:
+        if (war.get('attacker_id') == ctx.author.id and war.get('defender_id') == target.id) or \
+           (war.get('attacker_id') == target.id and war.get('defender_id') == ctx.author.id):
+            await ctx.send("There is already an active war between these players!")
+            return
     
     # Create war in database
-    # TODO: Implement war creation in database
-    
     justification = WAR_JUSTIFICATIONS[justification_name]
+    war_id = await db.create_war(
+        ctx.author.id, 
+        target.id, 
+        justification_name,
+        justification.victory_conditions,
+        justification.defeat_conditions
+    )
     
     embed = discord.Embed(
         title="⚔️ WAR DECLARED!",
@@ -916,9 +932,13 @@ async def export_player_data(ctx, target: Optional[discord.Member] = None):
         filename = f"player_export_{target_user.id}_{int(datetime.now().timestamp())}.json"
         filepath = os.path.join("bot_data", filename)
         
-        import aiofiles
-        async with aiofiles.open(filepath, 'w', encoding='utf-8') as f:
-            await f.write(json.dumps(player_data, indent=2, ensure_ascii=False, default=str))
+        if aiofiles:
+            async with aiofiles.open(filepath, 'w', encoding='utf-8') as f:
+                await f.write(json.dumps(player_data, indent=2, ensure_ascii=False, default=str))
+        else:
+            # Fallback to synchronous file operations if aiofiles not available
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(json.dumps(player_data, indent=2, ensure_ascii=False, default=str))
         
         embed = discord.Embed(
             title="Player Data Exported",
