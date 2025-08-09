@@ -1,1 +1,13 @@
-{}
+{
+  "general_1_1754657708": {
+    "id": "general_1_1754657708",
+    "player_id": 233520438242705408,
+    "name": "Joe Biden",
+    "level": 1,
+    "trait_id": 7,
+    "location": "Capital",
+    "army_id": null,
+    "is_captured": false,
+    "created_at": "2025-08-08T12:55:08.743585"
+  }
+}
