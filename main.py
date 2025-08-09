@@ -21,6 +21,8 @@ from models import (
 from json_data_manager import JsonDataManager
 from war_justifications import WAR_JUSTIFICATIONS, get_available_justifications, validate_justification
 from battle_system import BattleSystem, BattleSide, create_battle_brigade, create_battle_general
+from siege_system import SiegeSystem
+from temporary_structures import TemporaryStructureSystem, StructureType
 
 # Import keep_alive for Replit hosting
 try:
@@ -54,6 +56,10 @@ bot = HegemonyBot()
 
 # Initialize JSON data manager
 db = JsonDataManager()
+
+# Initialize additional systems
+siege_system = SiegeSystem(db)
+structure_system = TemporaryStructureSystem(db)
 
 class WarBot:
     def __init__(self):
@@ -174,14 +180,18 @@ async def profile_slash(interaction: discord.Interaction, member: Optional[disco
     resources = player.get('resources', {})
     cities = player.get('cities', [])
     
+    # Calculate dynamic values
+    brigade_cap = calculate_brigade_cap(player)
+    general_cap = calculate_general_cap(player.get('war_college_level', 1))
+    
     embed = discord.Embed(
         title=f"{target.display_name}'s Profile",
         color=discord.Color.blue()
     )
     
     embed.add_field(name="War College Level", value=player['war_college_level'], inline=True)
-    embed.add_field(name="Brigade Cap", value=player['brigade_cap'], inline=True)
-    embed.add_field(name="General Cap", value=player['general_cap'], inline=True)
+    embed.add_field(name="Brigade Cap", value=brigade_cap, inline=True)
+    embed.add_field(name="General Cap", value=general_cap, inline=True)
     
     resource_text = ", ".join([f"{k.title()}: {v}" for k, v in resources.items()])
     embed.add_field(name="Resources", value=resource_text or "None", inline=False)
@@ -216,8 +226,10 @@ async def create_brigade_slash(interaction: discord.Interaction, brigade_type: s
     
     # Check brigade cap
     current_brigades = await db.get_brigades(interaction.user.id)
-    if len(current_brigades) >= player['brigade_cap']:
-        await interaction.response.send_message(f"You've reached your brigade cap of {player['brigade_cap']}!")
+    brigade_cap = calculate_brigade_cap(player)
+    
+    if len(current_brigades) >= brigade_cap:
+        await interaction.response.send_message(f"You've reached your brigade cap of {brigade_cap}!")
         return
     
     # Check resources (2 food + 1 metal OR 40 silver)
@@ -333,16 +345,32 @@ async def recruit_general_slash(interaction: discord.Interaction, name: Optional
                        "Scipio", "Patton", "Rommel", "Montgomery", "Zhukov"]
         name = random.choice(name_options)
     
-    # Roll trait
-    trait_id = war_bot.roll_general_trait()
+    # Roll trait (with War College Level 2 double roll)
+    war_college_level = player.get('war_college_level', 1)
+    
+    if war_college_level >= 2:
+        # Roll twice and choose
+        trait_id_1 = war_bot.roll_general_trait()
+        trait_id_2 = war_bot.roll_general_trait()
+        
+        trait_1_name, trait_1_desc = GENERAL_TRAITS[trait_id_1]
+        trait_2_name, trait_2_desc = GENERAL_TRAITS[trait_id_2]
+        
+        # For simplicity, randomly choose one (in real game, player would choose)
+        trait_id = random.choice([trait_id_1, trait_id_2])
+        trait_name, trait_desc = GENERAL_TRAITS[trait_id]
+        
+        trait_info = f"**{trait_name}** (chosen from {trait_1_name}/{trait_2_name})\n{trait_desc}"
+    else:
+        trait_id = war_bot.roll_general_trait()
+        trait_name, trait_desc = GENERAL_TRAITS[trait_id]
+        trait_info = f"**{trait_name}**\n{trait_desc}"
     
     # Create general
     general_id = await db.create_general(interaction.user.id, name, trait_id)
     
     # Deduct silver from player
     await db.deduct_silver(interaction.user.id, cost)
-    
-    trait_name, trait_desc = GENERAL_TRAITS[trait_id]
     
     embed = discord.Embed(
         title="General Recruited!",
@@ -353,7 +381,7 @@ async def recruit_general_slash(interaction: discord.Interaction, name: Optional
     embed.add_field(name="General ID", value=str(general_id), inline=True)
     embed.add_field(name="Level", value="1", inline=True)
     embed.add_field(name="Cost", value=f"{cost} silver", inline=True)
-    embed.add_field(name="Trait", value=f"**{trait_name}**\n{trait_desc}", inline=False)
+    embed.add_field(name="Trait", value=trait_info, inline=False)
     
     await interaction.response.send_message(embed=embed)
 
@@ -638,14 +666,31 @@ async def pillage_slash(interaction: discord.Interaction, brigade_id: str):
         await interaction.response.send_message("Garrisoned brigades cannot pillage.")
         return
     
-    # Roll for pillage success (6 on d6)
+    # Roll for pillage success (6 on d6, or 5-6 with Brutal trait)
     roll = random.randint(1, 6)
+    success_threshold = 6
+    brutal_general = False
+    
+    # Check if brigade is in an army with a general
+    army_id = brigade.get('army_id')
+    if army_id:
+        army = await db.get_army(army_id)
+        if army and army.get('general_id'):
+            general = await db.get_general(army['general_id'])
+            if general:
+                trait_name, _ = GENERAL_TRAITS[general['trait_id']]
+                if trait_name == "Brutal":
+                    success_threshold = 5
+                    brutal_general = True
     
     embed = discord.Embed(title="Pillaging Attempt", color=discord.Color.orange())
     embed.add_field(name="Brigade", value=f"{brigade['type']} at {brigade.get('location', 'Unknown')}", inline=False)
     embed.add_field(name="Roll", value=f"🎲 {roll}/6", inline=True)
     
-    if roll == 6:
+    if brutal_general:
+        embed.add_field(name="Brutal General", value="Success on 5-6", inline=True)
+    
+    if roll >= success_threshold:
         # Successful pillage - gain random resource
         resources = ['food', 'metal', 'wood', 'stone']
         gained_resource = random.choice(resources)
@@ -696,6 +741,720 @@ async def data_stats_slash(interaction: discord.Interaction):
     
     except Exception as e:
         await interaction.response.send_message(f"❌ Error retrieving statistics: {e}")
+
+@bot.tree.command(name="enhance_brigade", description="Add an enhancement to a brigade")
+@app_commands.describe(
+    brigade_id="ID of the brigade to enhance",
+    enhancement="Enhancement to add"
+)
+async def enhance_brigade_slash(interaction: discord.Interaction, brigade_id: str, enhancement: str):
+    """Add an enhancement to a brigade."""
+    if war_bot.current_phase != GamePhase.ORGANIZATION:
+        await interaction.response.send_message("Brigades can only be enhanced during Organization phase!")
+        return
+    
+    player = await db.get_player(interaction.user.id)
+    if not player:
+        await interaction.response.send_message("You must register first! Use `/register`")
+        return
+    
+    brigade = await db.get_brigade(brigade_id)
+    if not brigade:
+        await interaction.response.send_message("Brigade not found.")
+        return
+    
+    if brigade['player_id'] != interaction.user.id:
+        await interaction.response.send_message("You don't own this brigade.")
+        return
+    
+    if brigade.get('enhancement'):
+        await interaction.response.send_message("This brigade already has an enhancement.")
+        return
+    
+    # Check if enhancement exists and is valid for brigade type
+    if enhancement not in ENHANCEMENTS:
+        await interaction.response.send_message("Invalid enhancement.")
+        return
+    
+    enhancement_data = ENHANCEMENTS[enhancement]
+    brigade_type = next(bt for bt in BrigadeType if bt.value.split()[1].lower() == brigade['type'])
+    
+    # Check if enhancement is compatible with brigade type
+    if enhancement_data.brigade_type and enhancement_data.brigade_type != brigade_type:
+        await interaction.response.send_message(f"Enhancement '{enhancement}' cannot be applied to {brigade['type']} brigades.")
+        return
+    
+    # Check if player can afford enhancement
+    if player.get('silver', 0) < enhancement_data.cost_silver:
+        await interaction.response.send_message(f"Insufficient silver! Need {enhancement_data.cost_silver} silver.")
+        return
+    
+    # Check resource costs
+    if enhancement_data.cost_resources:
+        for resource, cost in enhancement_data.cost_resources.items():
+            if player.get('resources', {}).get(resource, 0) < cost:
+                await interaction.response.send_message(f"Insufficient {resource}! Need {cost}.")
+                return
+    
+    # Deduct costs
+    await db.deduct_silver(interaction.user.id, enhancement_data.cost_silver)
+    if enhancement_data.cost_resources:
+        await db.deduct_resources(interaction.user.id, enhancement_data.cost_resources)
+    
+    # Apply enhancement
+    await db.update_brigade(brigade_id, {"enhancement": enhancement})
+    
+    embed = discord.Embed(
+        title="Brigade Enhanced!",
+        description=f"Brigade {brigade_id} has been enhanced",
+        color=discord.Color.gold()
+    )
+    
+    embed.add_field(name="Enhancement", value=enhancement, inline=True)
+    embed.add_field(name="Cost", value=f"{enhancement_data.cost_silver} silver", inline=True)
+    
+    if enhancement_data.cost_resources:
+        resources_cost = ", ".join([f"{amount} {resource}" for resource, amount in enhancement_data.cost_resources.items()])
+        embed.add_field(name="Resources", value=resources_cost, inline=True)
+    
+    if enhancement_data.special_ability:
+        embed.add_field(name="Special Ability", value=enhancement_data.special_ability, inline=False)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="build_structure", description="Build a temporary structure")
+@app_commands.describe(
+    structure_type="Type of structure to build",
+    location="Location to build the structure"
+)
+@app_commands.choices(structure_type=[
+    app_commands.Choice(name="Trench (1 stone)", value="trench"),
+    app_commands.Choice(name="Watchtower (2 stone)", value="watchtower"),
+    app_commands.Choice(name="Fort (3 stone)", value="fort")
+])
+async def build_structure_slash(interaction: discord.Interaction, structure_type: str, location: str):
+    """Build a temporary structure."""
+    structure_enum = StructureType(structure_type)
+    result = await structure_system.build_structure(interaction.user.id, structure_enum, location)
+    
+    if result["success"]:
+        embed = discord.Embed(
+            title="Structure Built!",
+            description=result["message"],
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Effect", value=result["effect"], inline=False)
+        embed.add_field(name="Expires", value="Next map update", inline=True)
+    else:
+        embed = discord.Embed(
+            title="Construction Failed",
+            description=result["message"],
+            color=discord.Color.red()
+        )
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="list_structures", description="List your temporary structures")
+async def list_structures_slash(interaction: discord.Interaction):
+    """List player's temporary structures."""
+    player = await db.get_player(interaction.user.id)
+    if not player:
+        await interaction.response.send_message("You must register first! Use `/register`")
+        return
+    
+    structures = await structure_system.get_player_structures(interaction.user.id)
+    
+    if not structures:
+        await interaction.response.send_message("You have no active structures.")
+        return
+    
+    embed = discord.Embed(
+        title=f"{interaction.user.display_name}'s Structures",
+        color=discord.Color.blue()
+    )
+    
+    for structure in structures:
+        structure_type = structure['type'].title()
+        embed.add_field(
+            name=f"{structure_type} at {structure['location']}",
+            value=f"Built: {structure['built_at'][:10]}\nExpires: Next map update",
+            inline=True
+        )
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="form_army", description="Form an army with a general and brigades")
+@app_commands.describe(
+    general_id="ID of the general to lead the army",
+    brigade_ids="Comma-separated list of brigade IDs (max 8)"
+)
+async def form_army_slash(interaction: discord.Interaction, general_id: str, brigade_ids: str):
+    """Form an army with a general and brigades."""
+    player = await db.get_player(interaction.user.id)
+    if not player:
+        await interaction.response.send_message("You must register first! Use `/register`")
+        return
+    
+    # Validate general
+    general = await db.get_general(general_id)
+    if not general:
+        await interaction.response.send_message("General not found.")
+        return
+    
+    if general['player_id'] != interaction.user.id:
+        await interaction.response.send_message("You don't own this general.")
+        return
+    
+    if general.get('army_id'):
+        await interaction.response.send_message("This general is already leading an army.")
+        return
+    
+    # Parse brigade IDs
+    brigade_id_list = [bid.strip() for bid in brigade_ids.split(',')]
+    if len(brigade_id_list) > 8:
+        await interaction.response.send_message("Armies cannot have more than 8 brigades.")
+        return
+    
+    # Validate brigades
+    valid_brigades = []
+    for brigade_id in brigade_id_list:
+        brigade = await db.get_brigade(brigade_id)
+        if not brigade:
+            await interaction.response.send_message(f"Brigade {brigade_id} not found.")
+            return
+        
+        if brigade['player_id'] != interaction.user.id:
+            await interaction.response.send_message(f"You don't own brigade {brigade_id}.")
+            return
+        
+        if brigade.get('army_id'):
+            await interaction.response.send_message(f"Brigade {brigade_id} is already in an army.")
+            return
+        
+        valid_brigades.append(brigade)
+    
+    # Create army
+    army_id = await db.create_army(interaction.user.id, general_id, brigade_id_list)
+    
+    embed = discord.Embed(
+        title="Army Formed!",
+        description=f"**{general['name']}'s Army** has been formed",
+        color=discord.Color.purple()
+    )
+    
+    embed.add_field(name="Army ID", value=army_id, inline=True)
+    embed.add_field(name="General", value=f"{general['name']} (Level {general['level']})", inline=True)
+    embed.add_field(name="Brigades", value=f"{len(valid_brigades)} brigades", inline=True)
+    
+    brigade_list = "\n".join([f"• {b['id']} ({b['type']})" for b in valid_brigades])
+    embed.add_field(name="Brigade Composition", value=brigade_list, inline=False)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="enhancements", description="Show all available brigade enhancements")
+async def enhancements_slash(interaction: discord.Interaction):
+    """Show all available enhancements."""
+    embed = discord.Embed(
+        title="🛠️ Brigade Enhancements",
+        description="Available enhancements for brigades",
+        color=discord.Color.orange()
+    )
+    
+    # Group by brigade type
+    enhancement_groups = {}
+    for name, enhancement in ENHANCEMENTS.items():
+        if enhancement.brigade_type:
+            type_name = enhancement.brigade_type.value
+        else:
+            type_name = "Universal"
+        
+        if type_name not in enhancement_groups:
+            enhancement_groups[type_name] = []
+        
+        enhancement_groups[type_name].append((name, enhancement))
+    
+    for group_name, enhancements in enhancement_groups.items():
+        enhancement_text = ""
+        for name, enhancement in enhancements:
+            cost_text = f"{enhancement.cost_silver} silver"
+            if enhancement.cost_resources:
+                resources = ", ".join([f"{amount} {resource}" for resource, amount in enhancement.cost_resources.items()])
+                cost_text += f" + {resources}"
+            
+            enhancement_text += f"**{name}** ({cost_text})\n"
+            if enhancement.special_ability:
+                enhancement_text += f"_{enhancement.special_ability}_\n"
+            enhancement_text += "\n"
+        
+        embed.add_field(name=group_name, value=enhancement_text, inline=False)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="retire_general", description="Retire a level 10 general to increase War College level")
+@app_commands.describe(general_id="ID of the level 10 general to retire")
+async def retire_general_slash(interaction: discord.Interaction, general_id: str):
+    """Retire a level 10 general."""
+    player = await db.get_player(interaction.user.id)
+    if not player:
+        await interaction.response.send_message("You must register first! Use `/register`")
+        return
+    
+    general = await db.get_general(general_id)
+    if not general:
+        await interaction.response.send_message("General not found.")
+        return
+    
+    if general['player_id'] != interaction.user.id:
+        await interaction.response.send_message("You don't own this general.")
+        return
+    
+    if general['level'] < 10:
+        await interaction.response.send_message(f"General must be level 10 to retire. Currently level {general['level']}.")
+        return
+    
+    # Check current war college level
+    current_war_college = player.get('war_college_level', 1)
+    
+    if current_war_college >= 10:
+        # Max level - give 300 silver instead
+        await db.add_resource(interaction.user.id, 'silver', 300)
+        reward_text = "300 silver (War College already at max level)"
+    else:
+        # Increase war college level
+        new_war_college = current_war_college + 1
+        await db.update_player(interaction.user.id, {'war_college_level': new_war_college})
+        
+        # Update general cap based on new war college level
+        new_general_cap = calculate_general_cap(new_war_college)
+        await db.update_player(interaction.user.id, {'general_cap': new_general_cap})
+        
+        reward_text = f"War College Level {new_war_college} (General Cap: {new_general_cap})"
+    
+    # Remove the general (retirement)
+    await db.update_general(general_id, {'status': 'retired', 'retired_at': datetime.now().isoformat()})
+    
+    embed = discord.Embed(
+        title="General Retired",
+        description=f"**{general['name']}** has retired from service",
+        color=discord.Color.gold()
+    )
+    
+    embed.add_field(name="Reward", value=reward_text, inline=False)
+    embed.add_field(name="Service Record", value=f"Level {general['level']} at retirement", inline=True)
+    
+    trait_name, _ = GENERAL_TRAITS[general['trait_id']]
+    embed.add_field(name="Final Trait", value=trait_name, inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="war_college", description="View your War College level and benefits")
+async def war_college_slash(interaction: discord.Interaction):
+    """Show War College information."""
+    player = await db.get_player(interaction.user.id)
+    if not player:
+        await interaction.response.send_message("You must register first! Use `/register`")
+        return
+    
+    war_college_level = player.get('war_college_level', 1)
+    
+    embed = discord.Embed(
+        title="🎓 War College",
+        description=f"Level {war_college_level}",
+        color=discord.Color.dark_gold()
+    )
+    
+    # Current benefits
+    benefits = get_war_college_benefits(war_college_level)
+    embed.add_field(name="Current Benefits", value=benefits, inline=False)
+    
+    # Next level benefits
+    if war_college_level < 10:
+        next_benefits = get_war_college_benefits(war_college_level + 1)
+        embed.add_field(name=f"Level {war_college_level + 1} Benefits", value=next_benefits, inline=False)
+        embed.add_field(name="To Advance", value="Retire a Level 10 General or Win a War", inline=False)
+    else:
+        embed.add_field(name="Status", value="Maximum Level Reached!", inline=False)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="siege", description="Start a siege on an enemy city")
+@app_commands.describe(
+    city_name="Name of the city to siege",
+    brigade_ids="Comma-separated list of brigade IDs to use in siege"
+)
+async def siege_slash(interaction: discord.Interaction, city_name: str, brigade_ids: str):
+    """Start a siege on an enemy city."""
+    if war_bot.current_phase != GamePhase.BATTLE:
+        await interaction.response.send_message("Sieges can only be started during Battle phase!")
+        return
+    
+    player = await db.get_player(interaction.user.id)
+    if not player:
+        await interaction.response.send_message("You must register first! Use `/register`")
+        return
+    
+    # Parse brigade IDs
+    brigade_id_list = [bid.strip() for bid in brigade_ids.split(',')]
+    
+    # Validate brigades
+    valid_brigades = []
+    for brigade_id in brigade_id_list:
+        brigade = await db.get_brigade(brigade_id)
+        if not brigade:
+            await interaction.response.send_message(f"Brigade {brigade_id} not found.")
+            return
+        
+        if brigade['player_id'] != interaction.user.id:
+            await interaction.response.send_message(f"You don't own brigade {brigade_id}.")
+            return
+        
+        valid_brigades.append(brigade)
+    
+    # For demo purposes, assume city tier 1 and defender ID 0 (would need proper city/map system)
+    city_tier = 1
+    defender_id = 0  # Would need to determine actual city owner
+    
+    siege_id = await siege_system.start_siege(city_name, city_tier, interaction.user.id, defender_id, brigade_id_list)
+    
+    embed = discord.Embed(
+        title="Siege Begun!",
+        description=f"Siege of {city_name} has started",
+        color=discord.Color.dark_red()
+    )
+    
+    embed.add_field(name="Siege ID", value=siege_id, inline=True)
+    embed.add_field(name="City Tier", value=str(city_tier), inline=True)
+    embed.add_field(name="Siege Timer", value=f"{city_tier} action cycles", inline=True)
+    embed.add_field(name="Brigades", value=f"{len(valid_brigades)} brigades", inline=True)
+    
+    embed.add_field(
+        name="Next Steps",
+        value="Wait for siege timer to expire, then use `/assault_city` or continue waiting to starve out the city",
+        inline=False
+    )
+    
+    await interaction.response.send_message(embed=embed)
+
+def calculate_general_cap(war_college_level: int) -> int:
+    """Calculate general cap based on war college level."""
+    if war_college_level >= 10:
+        return 4
+    elif war_college_level >= 7:
+        return 3
+    elif war_college_level >= 4:
+        return 2
+    else:
+        return 1
+
+def calculate_brigade_cap(player: Dict) -> int:
+    """Calculate brigade cap based on cities owned."""
+    base_cap = 2
+    cities = player.get('cities', [])
+    
+    for city in cities:
+        tier = city.get('tier', 1)
+        if tier == 1:
+            base_cap += 1
+        elif tier == 2:
+            base_cap += 3
+        elif tier == 3:
+            base_cap += 5
+    
+    return base_cap
+
+def get_war_college_benefits(level: int) -> str:
+    """Get description of war college benefits for a level."""
+    benefits = []
+    
+    if level >= 1:
+        general_cap = calculate_general_cap(level)
+        general_floor = min(((level - 1) // 3) + 1, 4)
+        benefits.append(f"General Cap: {general_cap}")
+        benefits.append(f"General Level Floor: {general_floor}")
+    
+    if level >= 2:
+        benefits.append("Roll for general traits twice, choose result")
+    
+    if level >= 5:
+        benefits.append("Pillaging +1, Sacking worth double")
+    
+    if level >= 8:
+        benefits.append("+1 to Skirmish and Defense rolls")
+    
+    return "\n".join([f"• {benefit}" for benefit in benefits])
+
+def calculate_army_movement(army_data: Dict, general_data: Optional[Dict] = None) -> int:
+    """Calculate army movement speed including general trait bonuses."""
+    # Base movement is speed of slowest brigade (would need to implement)
+    base_movement = 3  # Placeholder
+    
+    if general_data:
+        trait_name, _ = GENERAL_TRAITS[general_data['trait_id']]
+        if trait_name == "Relentless":
+            base_movement += 1  # +1 army movement on land
+        elif trait_name == "Mariner":
+            # +1 army movement while embarked (would need embarkation system)
+            pass
+    
+    return base_movement
+
+@bot.tree.command(name="list_armies", description="List all your armies")
+async def list_armies_slash(interaction: discord.Interaction):
+    """List all player's armies."""
+    player = await db.get_player(interaction.user.id)
+    if not player:
+        await interaction.response.send_message("You must register first! Use `/register`")
+        return
+    
+    armies = await db.get_armies(interaction.user.id)
+    
+    if not armies:
+        await interaction.response.send_message("You have no armies. Use `/form_army` to create one.")
+        return
+    
+    embed = discord.Embed(
+        title=f"{interaction.user.display_name}'s Armies",
+        color=discord.Color.purple()
+    )
+    
+    for army in armies:
+        general = await db.get_general(army['general_id'])
+        brigade_count = len(army.get('brigade_ids', []))
+        
+        embed.add_field(
+            name=f"#{army['id']} - {army.get('name', 'Unnamed Army')}",
+            value=f"General: {general['name'] if general else 'None'} (Level {general['level'] if general else 'N/A'})\nBrigades: {brigade_count}\nLocation: {army.get('location', 'Unknown')}",
+            inline=False
+        )
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="disband_army", description="Disband an army, returning brigades to individual control")
+@app_commands.describe(army_id="ID of the army to disband")
+async def disband_army_slash(interaction: discord.Interaction, army_id: str):
+    """Disband an army."""
+    player = await db.get_player(interaction.user.id)
+    if not player:
+        await interaction.response.send_message("You must register first! Use `/register`")
+        return
+    
+    army = await db.get_army(army_id)
+    if not army:
+        await interaction.response.send_message("Army not found.")
+        return
+    
+    if army['player_id'] != interaction.user.id:
+        await interaction.response.send_message("You don't own this army.")
+        return
+    
+    # Remove army references from general and brigades
+    if army.get('general_id'):
+        await db.update_general(army['general_id'], {'army_id': None})
+    
+    for brigade_id in army.get('brigade_ids', []):
+        await db.update_brigade(brigade_id, {'army_id': None})
+    
+    # Delete army
+    await db.delete_army(army_id)
+    
+    embed = discord.Embed(
+        title="Army Disbanded",
+        description=f"Army {army_id} has been disbanded",
+        color=discord.Color.orange()
+    )
+    
+    embed.add_field(name="General", value="Returned to city", inline=True)
+    embed.add_field(name="Brigades", value="Returned to individual control", inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="celebrate", description="Celebrate with an army after victory for rally bonus")
+@app_commands.describe(army_id="ID of the army to celebrate")
+async def celebrate_slash(interaction: discord.Interaction, army_id: str):
+    """Celebrate with an army."""
+    if war_bot.current_phase != GamePhase.MOVEMENT:
+        await interaction.response.send_message("Celebrating can only be done during Movement phase!")
+        return
+    
+    player = await db.get_player(interaction.user.id)
+    if not player:
+        await interaction.response.send_message("You must register first! Use `/register`")
+        return
+    
+    army = await db.get_army(army_id)
+    if not army:
+        await interaction.response.send_message("Army not found.")
+        return
+    
+    if army['player_id'] != interaction.user.id:
+        await interaction.response.send_message("You don't own this army.")
+        return
+    
+    # Check if army can celebrate (must have won a battle recently)
+    if not army.get('can_celebrate', False):
+        await interaction.response.send_message("This army cannot celebrate (must have won a battle in the previous cycle).")
+        return
+    
+    # Apply celebration effects
+    celebration_bonus = 1
+    general = await db.get_general(army['general_id']) if army.get('general_id') else None
+    
+    if general:
+        trait_name, _ = GENERAL_TRAITS[general['trait_id']]
+        if trait_name == "Inspiring":
+            celebration_bonus = 2
+    
+    # Mark brigades as celebrated (would need to track this)
+    for brigade_id in army.get('brigade_ids', []):
+        await db.update_brigade(brigade_id, {
+            'is_fatigued': True,
+            'celebration_bonus': celebration_bonus
+        })
+    
+    # Remove ability to celebrate again
+    await db.update_army(army_id, {'can_celebrate': False})
+    
+    embed = discord.Embed(
+        title="Army Celebrates!",
+        description=f"Army {army_id} celebrates their recent victory",
+        color=discord.Color.gold()
+    )
+    
+    embed.add_field(name="Rally Bonus", value=f"+{celebration_bonus} rally in next battle", inline=True)
+    embed.add_field(name="Status", value="All brigades are now fatigued", inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="general_traits", description="Show all general traits and their effects")
+async def general_traits_slash(interaction: discord.Interaction):
+    """Show detailed information about all general traits."""
+    embed = discord.Embed(
+        title="🎖️ General Traits",
+        description="All possible traits and their effects",
+        color=discord.Color.gold()
+    )
+    
+    # Group traits for better display
+    trait_groups = {
+        "Combat Traits": [1, 2, 3, 5, 11, 13, 15, 18],  # Ambitious, Bold, Brilliant, Cautious, Heroic, Lucky, Merciless, Resolute
+        "Leadership Traits": [7, 8, 9, 12, 20],  # Confident, Defiant, Disciplined, Inspiring, Zealous
+        "Strategic Traits": [4, 6, 10, 14, 17, 19],  # Brutal, Chivalrous, Dogged, Mariner, Relentless, Wary
+        "Special Traits": [16]  # Prodigious
+    }
+    
+    for group_name, trait_ids in trait_groups.items():
+        trait_text = ""
+        for trait_id in trait_ids:
+            trait_name, trait_desc = GENERAL_TRAITS[trait_id]
+            trait_text += f"**{trait_name}**: {trait_desc}\n"
+        
+        embed.add_field(name=group_name, value=trait_text, inline=False)
+    
+    embed.add_field(
+        name="Notes",
+        value="• Trait effects apply automatically in battles and actions\n• War College Level 2+ allows rolling twice for traits\n• Prodigious trait levels are lost if trait is rerolled",
+        inline=False
+    )
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="reroll_trait", description="Reroll a general's trait (costs 3 gems)")
+@app_commands.describe(general_id="ID of the general whose trait to reroll")
+async def reroll_trait_slash(interaction: discord.Interaction, general_id: str):
+    """Reroll a general's trait for 3 gems."""
+    player = await db.get_player(interaction.user.id)
+    if not player:
+        await interaction.response.send_message("You must register first! Use `/register`")
+        return
+    
+    general = await db.get_general(general_id)
+    if not general:
+        await interaction.response.send_message("General not found.")
+        return
+    
+    if general['player_id'] != interaction.user.id:
+        await interaction.response.send_message("You don't own this general.")
+        return
+    
+    # Check gem cost
+    if player.get('resources', {}).get('gems', 0) < 3:
+        await interaction.response.send_message("Insufficient gems! Need 3 gems to reroll trait.")
+        return
+    
+    # Get old trait info
+    old_trait_name, _ = GENERAL_TRAITS[general['trait_id']]
+    old_level = general['level']
+    
+    # Check if losing Prodigious levels
+    level_adjustment = 0
+    if old_trait_name == "Prodigious":
+        level_adjustment = -2
+    
+    # Deduct gems
+    await db.deduct_resources(interaction.user.id, {"gems": 3})
+    
+    # Roll new trait (with War College benefits)
+    war_college_level = player.get('war_college_level', 1)
+    
+    if war_college_level >= 2:
+        trait_id_1 = war_bot.roll_general_trait()
+        trait_id_2 = war_bot.roll_general_trait()
+        trait_id = random.choice([trait_id_1, trait_id_2])  # Simplified choice
+    else:
+        trait_id = war_bot.roll_general_trait()
+    
+    new_trait_name, new_trait_desc = GENERAL_TRAITS[trait_id]
+    
+    # Apply level adjustments
+    new_level = max(1, old_level + level_adjustment)
+    if new_trait_name == "Prodigious":
+        # Don't add levels here, they're added by the trait effect
+        pass
+    
+    # Update general
+    await db.update_general(general_id, {
+        'trait_id': trait_id,
+        'level': new_level
+    })
+    
+    embed = discord.Embed(
+        title="General Trait Rerolled",
+        description=f"**{general['name']}** has a new trait!",
+        color=discord.Color.purple()
+    )
+    
+    embed.add_field(name="Old Trait", value=old_trait_name, inline=True)
+    embed.add_field(name="New Trait", value=new_trait_name, inline=True)
+    embed.add_field(name="Cost", value="3 gems", inline=True)
+    embed.add_field(name="New Effect", value=new_trait_desc, inline=False)
+    
+    if level_adjustment != 0:
+        embed.add_field(name="Level Change", value=f"{old_level} → {new_level}", inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="update_brigade_cap", description="Recalculate brigade cap based on cities (Admin)")
+async def update_brigade_cap_slash(interaction: discord.Interaction):
+    """Update brigade cap calculation for all players."""
+    # This would be an admin command in a real implementation
+    players = await db.get_all_players()
+    updated_count = 0
+    
+    for player_id, player_data in players.items():
+        new_brigade_cap = calculate_brigade_cap(player_data)
+        old_brigade_cap = player_data.get('brigade_cap', 2)
+        
+        if new_brigade_cap != old_brigade_cap:
+            await db.update_player(int(player_id), {'brigade_cap': new_brigade_cap})
+            updated_count += 1
+    
+    embed = discord.Embed(
+        title="Brigade Caps Updated",
+        description=f"Updated {updated_count} players' brigade caps",
+        color=discord.Color.green()
+    )
+    
+    await interaction.response.send_message(embed=embed)
 
 # Error handling
 @bot.event

@@ -16,6 +16,8 @@ class JsonDataManager:
         self.wars_file = os.path.join(data_dir, "wars.json")
         self.battles_file = os.path.join(data_dir, "battles.json")
         self.game_state_file = os.path.join(data_dir, "game_state.json")
+        self.structures_file = os.path.join(data_dir, "structures.json")
+        self.sieges_file = os.path.join(data_dir, "sieges.json")
         
         # Create data directory if it doesn't exist
         os.makedirs(data_dir, exist_ok=True)
@@ -44,6 +46,8 @@ class JsonDataManager:
             (self.armies_file, {}),
             (self.wars_file, {}),
             (self.battles_file, {}),
+            (self.structures_file, {}),
+            (self.sieges_file, {}),
             (self.game_state_file, default_data["game_state"])
         ]
         

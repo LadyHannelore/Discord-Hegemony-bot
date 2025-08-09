@@ -46,11 +46,15 @@ class BattleSystem:
         self.battle_log.append(message)
         print(f"[BATTLE] {message}")
     
-    async def conduct_battle(self, side1: BattleSide, side2: BattleSide, location: str) -> dict:
+    async def conduct_battle(self, side1: BattleSide, side2: BattleSide, location: str, is_holy_war: bool = False) -> dict:
         """Conduct a full battle between two sides."""
         self.battle_log = []
         self.log(f"⚔️ **BATTLE AT {location.upper()}**")
         self.log(f"**{self._get_side_description(side1)}** vs **{self._get_side_description(side2)}**")
+        
+        # Apply general trait bonuses to all brigades
+        self._apply_general_trait_bonuses(side1, is_holy_war)
+        self._apply_general_trait_bonuses(side2, is_holy_war)
         
         # Determine positive/negative sides (random)
         if random.choice([True, False]):
@@ -84,12 +88,38 @@ class BattleSystem:
         """Conduct the skirmish phase."""
         self.log("\n🗡️ **SKIRMISH PHASE**")
         
+        # Check for Cautious trait - may skip skirmish
+        pos_general = positive_side.general
+        neg_general = negative_side.general
+        
+        if pos_general:
+            trait_name, _ = GENERAL_TRAITS[pos_general.trait_id]
+            if trait_name == "Cautious":
+                self.log("Positive side general is Cautious - may skip skirmishing")
+                # In a real implementation, this would prompt the player
+                # For now, randomly decide
+                if random.choice([True, False]):
+                    self.log("Positive side chooses to skip skirmishing!")
+                    return {'battle_continues': True}
+        
+        if neg_general:
+            trait_name, _ = GENERAL_TRAITS[neg_general.trait_id]
+            if trait_name == "Cautious":
+                self.log("Negative side general is Cautious - may skip skirmishing")
+                if random.choice([True, False]):
+                    self.log("Negative side chooses to skip skirmishing!")
+                    return {'battle_continues': True}
+        
         # Each side selects 2 best skirmishers
         pos_skirmishers = self._select_skirmishers(positive_side)
         neg_skirmishers = self._select_skirmishers(negative_side)
         
         self.log(f"Positive skirmishers: {[f'#{b.id} {b.type.value}' for b in pos_skirmishers]}")
         self.log(f"Negative skirmishers: {[f'#{b.id} {b.type.value}' for b in neg_skirmishers]}")
+        
+        # Apply Bold trait bonus to one skirmisher
+        self._apply_bold_trait_bonus(pos_skirmishers, positive_side.general)
+        self._apply_bold_trait_bonus(neg_skirmishers, negative_side.general)
         
         # Conduct skirmish attacks
         await self._resolve_skirmish_attacks(pos_skirmishers, negative_side)
@@ -165,9 +195,44 @@ class BattleSystem:
             
             # Check for victory by routing
             if pos_survivors == 0:
+                # Check for Heroic sacrifice before declaring defeat
+                if positive_side.general and not positive_side.general.is_captured:
+                    trait_name, _ = GENERAL_TRAITS[positive_side.general.trait_id]
+                    if trait_name == "Heroic":
+                        self.log("🔥 HEROIC SACRIFICE! General sacrifices himself for new pitch!")
+                        positive_side.general.is_captured = True  # General dies
+                        
+                        # Return all brigades to new pitch with general level bonus
+                        for brigade in positive_side.brigades:
+                            if brigade.is_routed:
+                                brigade.is_routed = False
+                                brigade.stats.pitch += positive_side.general.level
+                        
+                        self.log(f"All brigades return with +{positive_side.general.level} pitch bonus!")
+                        rally_count += 1
+                        pitch_tally = 0  # Reset for heroic charge
+                        continue
+                
                 self.log("🏆 **NEGATIVE SIDE WINS BY ROUTING ALL ENEMIES!**")
                 return {'winner': negative_side, 'loser': positive_side, 'type': 'rout'}
             elif neg_survivors == 0:
+                # Check for Heroic sacrifice
+                if negative_side.general and not negative_side.general.is_captured:
+                    trait_name, _ = GENERAL_TRAITS[negative_side.general.trait_id]
+                    if trait_name == "Heroic":
+                        self.log("🔥 HEROIC SACRIFICE! General sacrifices himself for new pitch!")
+                        negative_side.general.is_captured = True
+                        
+                        for brigade in negative_side.brigades:
+                            if brigade.is_routed:
+                                brigade.is_routed = False
+                                brigade.stats.pitch += negative_side.general.level
+                        
+                        self.log(f"All brigades return with +{negative_side.general.level} pitch bonus!")
+                        rally_count += 1
+                        pitch_tally = 0
+                        continue
+                
                 self.log("🏆 **POSITIVE SIDE WINS BY ROUTING ALL ENEMIES!**")
                 return {'winner': positive_side, 'loser': negative_side, 'type': 'rout'}
             
@@ -199,6 +264,52 @@ class BattleSystem:
         
         return pos_pitch - neg_pitch
     
+    def _apply_bold_trait_bonus(self, skirmishers: List[BattleBrigade], general: Optional[BattleGeneral]):
+        """Apply Bold trait bonus to one skirmisher."""
+        if not general:
+            return
+        
+        trait_name, _ = GENERAL_TRAITS[general.trait_id]
+        if trait_name == "Bold" and skirmishers:
+            # Apply bonus to best skirmisher
+            best_skirmisher = max(skirmishers, key=lambda b: b.stats.skirmish)
+            bonus = (general.level + 1) // 2  # Half general level rounded up
+            best_skirmisher.stats.skirmish += bonus
+            self.log(f"Bold general grants +{bonus} skirmish to #{best_skirmisher.id}")
+    
+    def _apply_general_trait_bonuses(self, side: BattleSide, is_holy_war: bool = False):
+        """Apply general trait bonuses to all brigades in army."""
+        if not side.general:
+            return
+        
+        trait_name, _ = GENERAL_TRAITS[side.general.trait_id]
+        
+        for brigade in side.brigades:
+            if brigade.is_destroyed:
+                continue
+            
+            # Apply stat bonuses based on trait
+            if trait_name == "Confident":
+                brigade.stats.defense += 2
+                brigade.stats.rally += 1
+            elif trait_name == "Defiant":
+                brigade.stats.rally += 2
+            elif trait_name == "Disciplined":
+                brigade.stats.pitch += 1
+                brigade.stats.rally += 1
+            elif trait_name == "Heroic":
+                brigade.stats.rally += 1
+            elif trait_name == "Resolute":
+                brigade.stats.defense += 3
+            elif trait_name == "Zealous":
+                if is_holy_war:
+                    brigade.stats.rally += 2
+                    brigade.stats.pitch += 1
+                else:
+                    brigade.stats.rally += 1
+        
+        self.log(f"Applied {trait_name} trait bonuses to army")
+    
     def _calculate_pitch_value(self, brigades: List[BattleBrigade], general: Optional[BattleGeneral]) -> int:
         """Calculate total pitch value for a side."""
         total = 0
@@ -216,6 +327,10 @@ class BattleSystem:
             trait_name, _ = GENERAL_TRAITS[general.trait_id]
             if trait_name == "Brilliant":
                 general_bonus *= 2  # Double general level for pitch
+                self.log(f"Brilliant general: {general_bonus} pitch bonus (doubled)")
+            elif trait_name == "Prodigious":
+                general_bonus += 2  # Additional 2 levels
+                self.log(f"Prodigious general: +2 bonus levels")
             
             total += general_bonus
         
@@ -234,10 +349,18 @@ class BattleSystem:
             # Apply general trait bonuses
             if side.general:
                 trait_name, _ = GENERAL_TRAITS[side.general.trait_id]
-                if trait_name in ["Confident", "Defiant", "Heroic", "Zealous"]:
-                    rally_roll += 1  # Simplified trait bonus
-                elif trait_name == "Defiant":
-                    rally_roll += 2
+                
+                # Free reroll for Inspiring trait
+                if trait_name == "Inspiring":
+                    original_roll = rally_roll
+                    reroll = random.randint(1, 6) + brigade.stats.rally
+                    if reroll > rally_roll:
+                        rally_roll = reroll
+                        self.log(f"Inspiring general: #{brigade.id} rerolled {original_roll} → {rally_roll}")
+                
+                # Apply celebration bonus for Inspiring
+                if hasattr(brigade, 'celebration_bonus') and trait_name == "Inspiring":
+                    rally_roll += 1  # Extra +1 for Inspiring celebration
             
             if rally_roll >= 5:
                 brigade.is_routed = False
@@ -266,9 +389,21 @@ class BattleSystem:
                 
                 casualty_roll = random.randint(1, 6)
                 
+                # Check for enemy Merciless trait
+                enemy_side = loser if side == winner else winner
+                if enemy_side and enemy_side.general:
+                    enemy_trait_name, _ = GENERAL_TRAITS[enemy_side.general.trait_id]
+                    if enemy_trait_name == "Merciless" and side != winner:
+                        # Enemy brigades destroyed on 1-3 instead of 1-2
+                        destruction_threshold = 3
+                    else:
+                        destruction_threshold = 2
+                else:
+                    destruction_threshold = 2
+                
                 # Winner gets reroll
                 if side == winner:
-                    if casualty_roll <= 2:
+                    if casualty_roll <= destruction_threshold:
                         reroll = random.randint(1, 6)
                         self.log(f"#{brigade.id} casualty roll: {casualty_roll} → {reroll} (reroll)")
                         casualty_roll = reroll
@@ -277,7 +412,7 @@ class BattleSystem:
                 else:
                     self.log(f"#{brigade.id} casualty roll: {casualty_roll}")
                 
-                if casualty_roll <= 2:
+                if casualty_roll <= destruction_threshold:
                     brigade.is_destroyed = True
                     self.log(f"💀 #{brigade.id} is destroyed!")
             
@@ -285,6 +420,24 @@ class BattleSystem:
             if side.general:
                 general = side.general
                 promotion_roll = random.randint(1, 6)
+                
+                # Apply trait effects
+                trait_name, _ = GENERAL_TRAITS[general.trait_id]
+                promotion_threshold = 5
+                
+                if trait_name == "Ambitious":
+                    promotion_threshold = 4  # -1 to promotion number needed
+                elif trait_name == "Lucky" and promotion_roll == 1:
+                    # Reroll once on a 1
+                    reroll = random.randint(1, 6)
+                    self.log(f"Lucky general rerolls promotion: {promotion_roll} → {reroll}")
+                    promotion_roll = reroll
+                
+                # Check for Officer Corps enhancement effect
+                for brigade in side.brigades:
+                    if hasattr(brigade, 'enhancement') and brigade.enhancement == "Officer Corps":
+                        promotion_threshold = 4  # Needs 4-6 instead of 5-6
+                        break
                 
                 # Winner gets reroll
                 if side == winner and promotion_roll == 1:
@@ -297,9 +450,15 @@ class BattleSystem:
                 if promotion_roll == 1:
                     general.is_captured = True
                     self.log(f"🔒 General {general.name} is captured!")
-                elif promotion_roll >= 5:
+                elif promotion_roll >= promotion_threshold:
                     general.level += 1
                     self.log(f"⭐ General {general.name} promoted to level {general.level}!")
+                    
+                    # Check for Life Guard enhancement effect
+                    for brigade in side.brigades:
+                        if hasattr(brigade, 'enhancement') and brigade.enhancement == "Life Guard":
+                            self.log(f"Life Guard allows reroll of promotion roll once per battle")
+                            break
 
 # Factory functions for creating battle participants
 def create_battle_brigade(brigade_data: dict, stats: BrigadeStats) -> BattleBrigade:
