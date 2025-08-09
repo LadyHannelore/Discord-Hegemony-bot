@@ -1433,6 +1433,525 @@ async def reroll_trait_slash(interaction: discord.Interaction, general_id: str):
     
     await interaction.response.send_message(embed=embed)
 
+@bot.tree.command(name="add_resources", description="Add resources to a player (Admin)")
+@app_commands.describe(
+    player="Player to give resources to",
+    gold="Amount of gold to add",
+    gems="Amount of gems to add",
+    population="Amount of population to add"
+)
+async def add_resources_slash(interaction: discord.Interaction, player: discord.Member, gold: int = 0, gems: int = 0, population: int = 0):
+    """Add resources to a player."""
+    # In a real implementation, you'd check for admin permissions here
+    # if not interaction.user.guild_permissions.administrator:
+    #     await interaction.response.send_message("You need admin permissions to use this command.")
+    #     return
+    
+    target_player = await db.get_player(player.id)
+    if not target_player:
+        await interaction.response.send_message(f"{player.display_name} is not registered.")
+        return
+    
+    # Add resources
+    resources_to_add = {}
+    if gold > 0:
+        resources_to_add['gold'] = gold
+    if gems > 0:
+        resources_to_add['gems'] = gems
+    if population > 0:
+        resources_to_add['population'] = population
+    
+    if resources_to_add:
+        await db.add_resources(player.id, resources_to_add)
+    
+    # Get updated player data
+    updated_player = await db.get_player(player.id)
+    if updated_player:
+        current_resources = updated_player.get('resources', {})
+    else:
+        current_resources = {}
+    
+    embed = discord.Embed(
+        title="Resources Added",
+        description=f"Resources added to {player.display_name}",
+        color=discord.Color.green()
+    )
+    
+    if gold > 0:
+        embed.add_field(name="Gold Added", value=f"+{gold}", inline=True)
+    if gems > 0:
+        embed.add_field(name="Gems Added", value=f"+{gems}", inline=True)
+    if population > 0:
+        embed.add_field(name="Population Added", value=f"+{population}", inline=True)
+    
+    embed.add_field(
+        name="Current Resources",
+        value=f"Gold: {current_resources.get('gold', 0)}\nGems: {current_resources.get('gems', 0)}\nPopulation: {current_resources.get('population', 0)}",
+        inline=False
+    )
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="set_resources", description="Set a player's resources to specific amounts (Admin)")
+@app_commands.describe(
+    player="Player to set resources for",
+    gold="Gold amount to set",
+    gems="Gems amount to set",
+    population="Population amount to set"
+)
+async def set_resources_slash(interaction: discord.Interaction, player: discord.Member, gold: Optional[int] = None, gems: Optional[int] = None, population: Optional[int] = None):
+    """Set a player's resources to specific amounts."""
+    target_player = await db.get_player(player.id)
+    if not target_player:
+        await interaction.response.send_message(f"{player.display_name} is not registered.")
+        return
+    
+    current_resources = target_player.get('resources', {})
+    new_resources = current_resources.copy()
+    
+    changes = []
+    if gold is not None:
+        old_gold = current_resources.get('gold', 0)
+        new_resources['gold'] = gold
+        changes.append(f"Gold: {old_gold} → {gold}")
+    
+    if gems is not None:
+        old_gems = current_resources.get('gems', 0)
+        new_resources['gems'] = gems
+        changes.append(f"Gems: {old_gems} → {gems}")
+    
+    if population is not None:
+        old_pop = current_resources.get('population', 0)
+        new_resources['population'] = population
+        changes.append(f"Population: {old_pop} → {population}")
+    
+    if changes:
+        await db.update_player(player.id, {'resources': new_resources})
+    
+    embed = discord.Embed(
+        title="Resources Set",
+        description=f"Resources updated for {player.display_name}",
+        color=discord.Color.blue()
+    )
+    
+    if changes:
+        embed.add_field(name="Changes", value="\n".join(changes), inline=False)
+    else:
+        embed.add_field(name="Status", value="No changes made", inline=False)
+    
+    embed.add_field(
+        name="Current Resources",
+        value=f"Gold: {new_resources.get('gold', 0)}\nGems: {new_resources.get('gems', 0)}\nPopulation: {new_resources.get('population', 0)}",
+        inline=False
+    )
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="add_city", description="Add a city to a player (Admin)")
+@app_commands.describe(
+    player="Player to give the city to",
+    city_name="Name of the city",
+    tier="City tier (1-3)",
+    location="City location/coordinates"
+)
+async def add_city_slash(interaction: discord.Interaction, player: discord.Member, city_name: str, tier: int = 1, location: str = "Unknown"):
+    """Add a city to a player."""
+    if tier < 1 or tier > 3:
+        await interaction.response.send_message("City tier must be between 1 and 3.")
+        return
+    
+    target_player = await db.get_player(player.id)
+    if not target_player:
+        await interaction.response.send_message(f"{player.display_name} is not registered.")
+        return
+    
+    # Create city data
+    city_data = {
+        'name': city_name,
+        'tier': tier,
+        'location': location,
+        'owner_id': player.id,
+        'garrison': [],
+        'under_siege': False,
+        'structures': []
+    }
+    
+    # Add city to player's cities list
+    current_cities = target_player.get('cities', [])
+    current_cities.append(city_data)
+    
+    # Update brigade cap based on new city
+    new_brigade_cap = calculate_brigade_cap({'cities': current_cities})
+    
+    await db.update_player(player.id, {
+        'cities': current_cities,
+        'brigade_cap': new_brigade_cap
+    })
+    
+    embed = discord.Embed(
+        title="City Added",
+        description=f"New city granted to {player.display_name}",
+        color=discord.Color.green()
+    )
+    
+    embed.add_field(name="City Name", value=city_name, inline=True)
+    embed.add_field(name="Tier", value=f"Tier {tier}", inline=True)
+    embed.add_field(name="Location", value=location, inline=True)
+    
+    # Calculate tier benefits
+    tier_benefits = {
+        1: "+1 brigade cap",
+        2: "+3 brigade cap",
+        3: "+5 brigade cap"
+    }
+    
+    embed.add_field(name="Benefits", value=tier_benefits[tier], inline=True)
+    embed.add_field(name="New Brigade Cap", value=str(new_brigade_cap), inline=True)
+    embed.add_field(name="Total Cities", value=str(len(current_cities)), inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="remove_city", description="Remove a city from a player (Admin)")
+@app_commands.describe(
+    player="Player to remove city from",
+    city_name="Name of the city to remove"
+)
+async def remove_city_slash(interaction: discord.Interaction, player: discord.Member, city_name: str):
+    """Remove a city from a player."""
+    target_player = await db.get_player(player.id)
+    if not target_player:
+        await interaction.response.send_message(f"{player.display_name} is not registered.")
+        return
+    
+    current_cities = target_player.get('cities', [])
+    city_to_remove = None
+    
+    # Find the city
+    for i, city in enumerate(current_cities):
+        if city['name'].lower() == city_name.lower():
+            city_to_remove = current_cities.pop(i)
+            break
+    
+    if not city_to_remove:
+        await interaction.response.send_message(f"City '{city_name}' not found for {player.display_name}.")
+        return
+    
+    # Update brigade cap
+    new_brigade_cap = calculate_brigade_cap({'cities': current_cities})
+    
+    await db.update_player(player.id, {
+        'cities': current_cities,
+        'brigade_cap': new_brigade_cap
+    })
+    
+    embed = discord.Embed(
+        title="City Removed",
+        description=f"City removed from {player.display_name}",
+        color=discord.Color.red()
+    )
+    
+    embed.add_field(name="City Name", value=city_to_remove['name'], inline=True)
+    embed.add_field(name="Tier", value=f"Tier {city_to_remove['tier']}", inline=True)
+    embed.add_field(name="Location", value=city_to_remove['location'], inline=True)
+    
+    embed.add_field(name="New Brigade Cap", value=str(new_brigade_cap), inline=True)
+    embed.add_field(name="Remaining Cities", value=str(len(current_cities)), inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="list_cities", description="List all cities owned by a player")
+@app_commands.describe(player="Player to list cities for (optional, defaults to yourself)")
+async def list_cities_slash(interaction: discord.Interaction, player: Optional[discord.Member] = None):
+    """List all cities owned by a player."""
+    target_player_id = player.id if player else interaction.user.id
+    target_player_data = await db.get_player(target_player_id)
+    
+    if not target_player_data:
+        target_name = player.display_name if player else "You"
+        await interaction.response.send_message(f"{target_name} must register first! Use `/register`")
+        return
+    
+    cities = target_player_data.get('cities', [])
+    target_name = player.display_name if player else interaction.user.display_name
+    
+    if not cities:
+        await interaction.response.send_message(f"{target_name} owns no cities.")
+        return
+    
+    embed = discord.Embed(
+        title=f"{target_name}'s Cities",
+        description=f"Total cities: {len(cities)}",
+        color=discord.Color.blue()
+    )
+    
+    tier_counts = {1: 0, 2: 0, 3: 0}
+    total_brigade_bonus = 0
+    
+    for city in cities:
+        tier = city.get('tier', 1)
+        tier_counts[tier] += 1
+        
+        if tier == 1:
+            total_brigade_bonus += 1
+        elif tier == 2:
+            total_brigade_bonus += 3
+        elif tier == 3:
+            total_brigade_bonus += 5
+        
+        siege_status = " 🏴 (Under Siege)" if city.get('under_siege', False) else ""
+        garrison_count = len(city.get('garrison', []))
+        
+        embed.add_field(
+            name=f"{city['name']} (Tier {tier}){siege_status}",
+            value=f"Location: {city.get('location', 'Unknown')}\nGarrison: {garrison_count} brigades",
+            inline=True
+        )
+    
+    embed.add_field(
+        name="Summary",
+        value=f"Tier 1: {tier_counts[1]} cities\nTier 2: {tier_counts[2]} cities\nTier 3: {tier_counts[3]} cities",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="Brigade Cap Bonus",
+        value=f"+{total_brigade_bonus} from cities\nTotal Cap: {calculate_brigade_cap(target_player_data)}",
+        inline=True
+    )
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="upgrade_city", description="Upgrade a city's tier (Admin)")
+@app_commands.describe(
+    player="Player who owns the city",
+    city_name="Name of the city to upgrade",
+    new_tier="New tier for the city (1-3)"
+)
+async def upgrade_city_slash(interaction: discord.Interaction, player: discord.Member, city_name: str, new_tier: int):
+    """Upgrade or downgrade a city's tier."""
+    if new_tier < 1 or new_tier > 3:
+        await interaction.response.send_message("City tier must be between 1 and 3.")
+        return
+    
+    target_player = await db.get_player(player.id)
+    if not target_player:
+        await interaction.response.send_message(f"{player.display_name} is not registered.")
+        return
+    
+    current_cities = target_player.get('cities', [])
+    city_found = False
+    old_tier = 0
+    
+    # Find and update the city
+    for city in current_cities:
+        if city['name'].lower() == city_name.lower():
+            old_tier = city['tier']
+            city['tier'] = new_tier
+            city_found = True
+            break
+    
+    if not city_found:
+        await interaction.response.send_message(f"City '{city_name}' not found for {player.display_name}.")
+        return
+    
+    # Update brigade cap
+    new_brigade_cap = calculate_brigade_cap({'cities': current_cities})
+    
+    await db.update_player(player.id, {
+        'cities': current_cities,
+        'brigade_cap': new_brigade_cap
+    })
+    
+    embed = discord.Embed(
+        title="City Upgraded",
+        description=f"City tier changed for {player.display_name}",
+        color=discord.Color.gold()
+    )
+    
+    embed.add_field(name="City Name", value=city_name, inline=True)
+    embed.add_field(name="Tier Change", value=f"{old_tier} → {new_tier}", inline=True)
+    embed.add_field(name="New Brigade Cap", value=str(new_brigade_cap), inline=True)
+    
+    # Show tier benefits
+    tier_benefits = {
+        1: "+1 brigade cap",
+        2: "+3 brigade cap",
+        3: "+5 brigade cap"
+    }
+    
+    embed.add_field(name="New Benefits", value=tier_benefits[new_tier], inline=True)
+    
+    if new_tier > old_tier:
+        embed.color = discord.Color.green()
+        embed.add_field(name="Status", value="Upgraded! 📈", inline=True)
+    elif new_tier < old_tier:
+        embed.color = discord.Color.orange()
+        embed.add_field(name="Status", value="Downgraded 📉", inline=True)
+    else:
+        embed.add_field(name="Status", value="No change", inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="transfer_resources", description="Transfer resources to another player")
+@app_commands.describe(
+    recipient="Player to transfer resources to",
+    gold="Amount of gold to transfer",
+    gems="Amount of gems to transfer",
+    population="Amount of population to transfer"
+)
+async def transfer_resources_slash(interaction: discord.Interaction, recipient: discord.Member, gold: int = 0, gems: int = 0, population: int = 0):
+    """Transfer resources to another player."""
+    if recipient.id == interaction.user.id:
+        await interaction.response.send_message("You cannot transfer resources to yourself.")
+        return
+    
+    if gold <= 0 and gems <= 0 and population <= 0:
+        await interaction.response.send_message("You must transfer at least some resources.")
+        return
+    
+    sender = await db.get_player(interaction.user.id)
+    if not sender:
+        await interaction.response.send_message("You must register first! Use `/register`")
+        return
+    
+    recipient_data = await db.get_player(recipient.id)
+    if not recipient_data:
+        await interaction.response.send_message(f"{recipient.display_name} is not registered.")
+        return
+    
+    sender_resources = sender.get('resources', {})
+    
+    # Check if sender has enough resources
+    if gold > sender_resources.get('gold', 0):
+        await interaction.response.send_message(f"Insufficient gold! You have {sender_resources.get('gold', 0)}, need {gold}.")
+        return
+    if gems > sender_resources.get('gems', 0):
+        await interaction.response.send_message(f"Insufficient gems! You have {sender_resources.get('gems', 0)}, need {gems}.")
+        return
+    if population > sender_resources.get('population', 0):
+        await interaction.response.send_message(f"Insufficient population! You have {sender_resources.get('population', 0)}, need {population}.")
+        return
+    
+    # Perform transfer
+    resources_to_deduct = {}
+    resources_to_add = {}
+    
+    if gold > 0:
+        resources_to_deduct['gold'] = gold
+        resources_to_add['gold'] = gold
+    if gems > 0:
+        resources_to_deduct['gems'] = gems
+        resources_to_add['gems'] = gems
+    if population > 0:
+        resources_to_deduct['population'] = population
+        resources_to_add['population'] = population
+    
+    await db.deduct_resources(interaction.user.id, resources_to_deduct)
+    await db.add_resources(recipient.id, resources_to_add)
+    
+    embed = discord.Embed(
+        title="Resources Transferred",
+        description=f"{interaction.user.display_name} → {recipient.display_name}",
+        color=discord.Color.green()
+    )
+    
+    transfer_text = []
+    if gold > 0:
+        transfer_text.append(f"Gold: {gold}")
+    if gems > 0:
+        transfer_text.append(f"Gems: {gems}")
+    if population > 0:
+        transfer_text.append(f"Population: {population}")
+    
+    embed.add_field(name="Transferred", value="\n".join(transfer_text), inline=False)
+    
+    # Show remaining resources for sender
+    updated_sender = await db.get_player(interaction.user.id)
+    if updated_sender:
+        sender_resources = updated_sender.get('resources', {})
+        embed.add_field(
+            name="Your Remaining Resources",
+            value=f"Gold: {sender_resources.get('gold', 0)}\nGems: {sender_resources.get('gems', 0)}\nPopulation: {sender_resources.get('population', 0)}",
+            inline=True
+        )
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="view_resources", description="View detailed resource information")
+@app_commands.describe(player="Player to view resources for (optional, defaults to yourself)")
+async def view_resources_slash(interaction: discord.Interaction, player: Optional[discord.Member] = None):
+    """View detailed resource information for a player."""
+    target_player_id = player.id if player else interaction.user.id
+    target_player_data = await db.get_player(target_player_id)
+    
+    if not target_player_data:
+        target_name = player.display_name if player else "You"
+        await interaction.response.send_message(f"{target_name} must register first! Use `/register`")
+        return
+    
+    target_name = player.display_name if player else interaction.user.display_name
+    resources = target_player_data.get('resources', {})
+    
+    embed = discord.Embed(
+        title=f"{target_name}'s Resources",
+        color=discord.Color.gold()
+    )
+    
+    # Current resources
+    gold = resources.get('gold', 0)
+    gems = resources.get('gems', 0)
+    population = resources.get('population', 0)
+    
+    embed.add_field(name="💰 Gold", value=str(gold), inline=True)
+    embed.add_field(name="💎 Gems", value=str(gems), inline=True)
+    embed.add_field(name="👥 Population", value=str(population), inline=True)
+    
+    # Calculate income/expenses
+    cities = target_player_data.get('cities', [])
+    brigades = await db.get_brigades(target_player_id)
+    generals = await db.get_generals(target_player_id)
+    
+    # Income calculation
+    city_income = len(cities) * 5  # Base city income
+    total_income = city_income
+    
+    # Expense calculation
+    brigade_upkeep = len(brigades) * 2  # Base brigade upkeep
+    general_upkeep = len(generals) * 1  # Base general upkeep
+    total_expenses = brigade_upkeep + general_upkeep
+    
+    net_income = total_income - total_expenses
+    
+    embed.add_field(
+        name="💹 Income (per turn)",
+        value=f"Cities: +{city_income} gold\nTotal: +{total_income} gold",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="💸 Expenses (per turn)",
+        value=f"Brigades: -{brigade_upkeep} gold\nGenerals: -{general_upkeep} gold\nTotal: -{total_expenses} gold",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="📊 Net Income",
+        value=f"{'+'if net_income >= 0 else ''}{net_income} gold per turn",
+        inline=True
+    )
+    
+    # Resource capacity/limits
+    brigade_cap = calculate_brigade_cap(target_player_data)
+    general_cap = calculate_general_cap(target_player_data.get('war_college_level', 1))
+    
+    embed.add_field(
+        name="📋 Capacity",
+        value=f"Brigades: {len(brigades)}/{brigade_cap}\nGenerals: {len(generals)}/{general_cap}",
+        inline=True
+    )
+    
+    await interaction.response.send_message(embed=embed)
+
 @bot.tree.command(name="update_brigade_cap", description="Recalculate brigade cap based on cities (Admin)")
 async def update_brigade_cap_slash(interaction: discord.Interaction):
     """Update brigade cap calculation for all players."""
@@ -1453,6 +1972,249 @@ async def update_brigade_cap_slash(interaction: discord.Interaction):
         description=f"Updated {updated_count} players' brigade caps",
         color=discord.Color.green()
     )
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="siege_city", description="Lay siege to an enemy city")
+@app_commands.describe(
+    army_id="ID of the army to conduct the siege",
+    city_name="Name of the city to siege",
+    target_player="Player who owns the city"
+)
+async def siege_city_slash(interaction: discord.Interaction, army_id: str, city_name: str, target_player: discord.Member):
+    """Lay siege to an enemy city."""
+    if war_bot.current_phase != GamePhase.MOVEMENT:
+        await interaction.response.send_message("Sieges can only be initiated during Movement phase!")
+        return
+    
+    player = await db.get_player(interaction.user.id)
+    if not player:
+        await interaction.response.send_message("You must register first! Use `/register`")
+        return
+    
+    army = await db.get_army(army_id)
+    if not army:
+        await interaction.response.send_message("Army not found.")
+        return
+    
+    if army['player_id'] != interaction.user.id:
+        await interaction.response.send_message("You don't own this army.")
+        return
+    
+    target_data = await db.get_player(target_player.id)
+    if not target_data:
+        await interaction.response.send_message(f"{target_player.display_name} is not registered.")
+        return
+    
+    # Find the target city
+    target_cities = target_data.get('cities', [])
+    target_city = None
+    
+    for city in target_cities:
+        if city['name'].lower() == city_name.lower():
+            target_city = city
+            break
+    
+    if not target_city:
+        await interaction.response.send_message(f"City '{city_name}' not found for {target_player.display_name}.")
+        return
+    
+    if target_city.get('under_siege', False):
+        await interaction.response.send_message(f"City '{city_name}' is already under siege!")
+        return
+    
+    # Start siege using siege system
+    army_brigade_ids = army.get('brigade_ids', [])
+    general_id = army.get('general_id')
+    
+    siege_id = await siege_system.start_siege(
+        target_city['name'], 
+        target_city['tier'], 
+        interaction.user.id, 
+        target_player.id, 
+        army_brigade_ids, 
+        general_id
+    )
+    
+    if siege_id:
+        # Mark city as under siege
+        target_city['under_siege'] = True
+        target_city['besieging_army'] = army_id
+        await db.update_player(target_player.id, {'cities': target_cities})
+        
+        embed = discord.Embed(
+            title="Siege Begun!",
+            description=f"Army {army_id} has laid siege to {city_name}",
+            color=discord.Color.red()
+        )
+        
+        embed.add_field(name="Target City", value=f"{city_name} (Tier {target_city['tier']})", inline=True)
+        embed.add_field(name="Defender", value=target_player.display_name, inline=True)
+        embed.add_field(name="Siege Duration", value="7 days", inline=True)
+        
+        garrison_count = len(target_city.get('garrison', []))
+        embed.add_field(name="Garrison", value=f"{garrison_count} brigades", inline=True)
+        
+        await interaction.response.send_message(embed=embed)
+    else:
+        await interaction.response.send_message("Failed to start siege.")
+
+@bot.tree.command(name="garrison_city", description="Move brigades to garrison a city")
+@app_commands.describe(
+    city_name="Name of your city to garrison",
+    brigade_ids="Comma-separated list of brigade IDs to garrison"
+)
+async def garrison_city_slash(interaction: discord.Interaction, city_name: str, brigade_ids: str):
+    """Move brigades to garrison a city."""
+    player = await db.get_player(interaction.user.id)
+    if not player:
+        await interaction.response.send_message("You must register first! Use `/register`")
+        return
+    
+    # Find the city
+    cities = player.get('cities', [])
+    target_city = None
+    city_index = -1
+    
+    for i, city in enumerate(cities):
+        if city['name'].lower() == city_name.lower():
+            target_city = city
+            city_index = i
+            break
+    
+    if not target_city:
+        await interaction.response.send_message(f"You don't own a city named '{city_name}'.")
+        return
+    
+    # Parse brigade IDs
+    try:
+        brigade_id_list = [bid.strip() for bid in brigade_ids.split(',')]
+    except:
+        await interaction.response.send_message("Invalid brigade ID format. Use comma-separated IDs.")
+        return
+    
+    # Validate brigades
+    valid_brigades = []
+    for brigade_id in brigade_id_list:
+        brigade = await db.get_brigade(brigade_id)
+        if not brigade:
+            await interaction.response.send_message(f"Brigade {brigade_id} not found.")
+            return
+        if brigade['player_id'] != interaction.user.id:
+            await interaction.response.send_message(f"You don't own brigade {brigade_id}.")
+            return
+        if brigade.get('army_id'):
+            await interaction.response.send_message(f"Brigade {brigade_id} is already in an army.")
+            return
+        valid_brigades.append(brigade)
+    
+    # Add brigades to garrison
+    current_garrison = target_city.get('garrison', [])
+    
+    for brigade in valid_brigades:
+        current_garrison.append(brigade['id'])
+        # Update brigade to show it's garrisoning
+        await db.update_brigade(brigade['id'], {'garrison_city': city_name})
+    
+    # Update city
+    cities[city_index]['garrison'] = current_garrison
+    await db.update_player(interaction.user.id, {'cities': cities})
+    
+    embed = discord.Embed(
+        title="City Garrisoned",
+        description=f"Brigades added to {city_name} garrison",
+        color=discord.Color.blue()
+    )
+    
+    embed.add_field(name="City", value=f"{city_name} (Tier {target_city['tier']})", inline=True)
+    embed.add_field(name="Brigades Added", value=str(len(valid_brigades)), inline=True)
+    embed.add_field(name="Total Garrison", value=str(len(current_garrison)), inline=True)
+    
+    brigade_names = []
+    for brigade in valid_brigades:
+        brigade_names.append(f"{brigade['type']} #{brigade['id']}")
+    
+    embed.add_field(name="Added Brigades", value="\n".join(brigade_names), inline=False)
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="ungarrison_city", description="Remove brigades from city garrison")
+@app_commands.describe(
+    city_name="Name of your city to ungarrison",
+    brigade_ids="Comma-separated list of brigade IDs to remove (or 'all' for all brigades)"
+)
+async def ungarrison_city_slash(interaction: discord.Interaction, city_name: str, brigade_ids: str):
+    """Remove brigades from city garrison."""
+    player = await db.get_player(interaction.user.id)
+    if not player:
+        await interaction.response.send_message("You must register first! Use `/register`")
+        return
+    
+    # Find the city
+    cities = player.get('cities', [])
+    target_city = None
+    city_index = -1
+    
+    for i, city in enumerate(cities):
+        if city['name'].lower() == city_name.lower():
+            target_city = city
+            city_index = i
+            break
+    
+    if not target_city:
+        await interaction.response.send_message(f"You don't own a city named '{city_name}'.")
+        return
+    
+    current_garrison = target_city.get('garrison', [])
+    if not current_garrison:
+        await interaction.response.send_message(f"{city_name} has no garrison.")
+        return
+    
+    # Parse brigade IDs
+    if brigade_ids.lower() == 'all':
+        brigade_id_list = current_garrison.copy()
+    else:
+        try:
+            brigade_id_list = [bid.strip() for bid in brigade_ids.split(',')]
+        except:
+            await interaction.response.send_message("Invalid brigade ID format. Use comma-separated IDs or 'all'.")
+            return
+    
+    # Remove brigades from garrison
+    removed_brigades = []
+    for brigade_id in brigade_id_list:
+        if brigade_id in current_garrison:
+            current_garrison.remove(brigade_id)
+            # Update brigade to remove garrison status
+            await db.update_brigade(brigade_id, {'garrison_city': None})
+            
+            brigade = await db.get_brigade(brigade_id)
+            if brigade:
+                removed_brigades.append(brigade)
+    
+    if not removed_brigades:
+        await interaction.response.send_message("No valid brigades found in garrison.")
+        return
+    
+    # Update city
+    cities[city_index]['garrison'] = current_garrison
+    await db.update_player(interaction.user.id, {'cities': cities})
+    
+    embed = discord.Embed(
+        title="Brigades Ungarrisoned",
+        description=f"Brigades removed from {city_name} garrison",
+        color=discord.Color.orange()
+    )
+    
+    embed.add_field(name="City", value=f"{city_name} (Tier {target_city['tier']})", inline=True)
+    embed.add_field(name="Brigades Removed", value=str(len(removed_brigades)), inline=True)
+    embed.add_field(name="Remaining Garrison", value=str(len(current_garrison)), inline=True)
+    
+    brigade_names = []
+    for brigade in removed_brigades:
+        brigade_names.append(f"{brigade['type']} #{brigade['id']}")
+    
+    embed.add_field(name="Removed Brigades", value="\n".join(brigade_names), inline=False)
     
     await interaction.response.send_message(embed=embed)
 
