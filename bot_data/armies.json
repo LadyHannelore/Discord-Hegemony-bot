@@ -1,1 +1,15 @@
-{}
+{
+  "army_1_1754703147": {
+    "id": "army_1_1754703147",
+    "player_id": 233520438242705408,
+    "general_id": "general_1_1754657708",
+    "brigade_ids": [
+      "brigade_1_1754657165",
+      "brigade_2_1754657657"
+    ],
+    "name": "Joe Biden's Army",
+    "location": "Capital",
+    "movement_orders": null,
+    "created_at": "2025-08-09T01:32:27.636731"
+  }
+}
